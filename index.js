@@ -5,7 +5,7 @@ const path = require("path");
 const axios = require("axios");
 const fs = require("fs").promises;
 
-const region = { left: 50, top: 50, width: 100, height: 100 };
+const region = { left: 1, top: 1, width: 100, height: 100 };
 
 class ImageComparison {
   constructor() {
@@ -168,7 +168,16 @@ class ImageComparison {
           ),
         },
         colorsRegion: {
-          difference: await this.handleRegionComparison(image1Path, image2Path),
+          difference: await this.handleRegionComparison(
+            image1Path,
+            image2Path,
+            {
+              left: 0,
+              top: 0,
+              width: metadata1.width,
+              height: metadata1.height,
+            }
+          ),
         },
       };
 
@@ -353,7 +362,7 @@ class ImageComparison {
     }
   }
 
-  async handleRegionComparison(path1, path2) {
+  async handleRegionComparison(path1, path2, region) {
     try {
       // Validate inputs
       if (!path1 || !path2) {
@@ -361,11 +370,11 @@ class ImageComparison {
       }
 
       // Validate region object
-      if (!region.left || !region.top || !region.width || !region.height) {
-        throw new Error(
-          "Region must include left, top, width, and height coordinates!"
-        );
-      }
+      // if (!region.left || !region.top || !region.width || !region.height) {
+      //   throw new Error(
+      //     "Region must include left, top, width, and height coordinates!"
+      //   );
+      // }
 
       // Validate file existence
       // await Promise.all([
