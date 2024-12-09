@@ -5,6 +5,8 @@ const path = require("path");
 const axios = require("axios");
 const fs = require("fs").promises;
 
+const region = { left: 50, top: 50, width: 100, height: 100 };
+
 class ImageComparison {
   constructor() {
     this.app = express();
@@ -38,6 +40,15 @@ class ImageComparison {
       express.json(),
       this.handleUrlImageAnalysis.bind(this)
     );
+
+    // this.app.post(
+    //   "/api/compare/region",
+    //   upload.fields([
+    //     { name: "image1", maxCount: 1 },
+    //     { name: "image2", maxCount: 1 },
+    //   ]),
+    //   this.handleRegionComparison.bind(this)
+    // );
   }
 
   async downloadImage(url) {
@@ -156,6 +167,9 @@ class ImageComparison {
             image1Analysis.stats.contrast - image2Analysis.stats.contrast
           ),
         },
+        colorsRegion: {
+          difference: await this.handleRegionComparison(image1Path, image2Path),
+        },
       };
 
       return comparison;
@@ -252,6 +266,175 @@ class ImageComparison {
         analysis1.channels[2].mean - analysis2.channels[2].mean
       ),
     };
+  }
+
+  async compareRegionColors(image1Path, region, image2Path) {
+    try {
+      // Extract the region from the first image
+      const image1 = sharp(image1Path);
+      const metadata1 = await image1.metadata();
+
+      // Validate region coordinates
+      const validRegion = {
+        left: Math.max(0, Math.min(region.left, metadata1.width)),
+        top: Math.max(0, Math.min(region.top, metadata1.height)),
+        width: Math.min(region.width, metadata1.width - region.left),
+        height: Math.min(region.height, metadata1.height - region.top),
+      };
+
+      // Extract colors from the specified region of image1
+      const regionBuffer = await image1.extract(validRegion).raw().toBuffer();
+
+      // Get all pixels from image2
+      const image2 = sharp(image2Path);
+      const image2Buffer = await image2.raw().toBuffer();
+      const metadata2 = await image2.metadata();
+
+      // Create color maps for both images
+      const regionColors = new Map();
+      const threshold = 15; // Color similarity threshold
+
+      // Process region colors (image1)
+      for (let i = 0; i < regionBuffer.length; i += 3) {
+        const color = {
+          r: regionBuffer[i],
+          g: regionBuffer[i + 1],
+          b: regionBuffer[i + 2],
+        };
+        const colorKey = `${Math.floor(color.r / threshold)},${Math.floor(
+          color.g / threshold
+        )},${Math.floor(color.b / threshold)}`;
+        regionColors.set(colorKey, (regionColors.get(colorKey) || 0) + 1);
+      }
+
+      // Process image2 colors and check matches
+      const colorMatches = new Map();
+      const totalRegionPixels = validRegion.width * validRegion.height;
+
+      for (let i = 0; i < image2Buffer.length; i += 3) {
+        const color = {
+          r: image2Buffer[i],
+          g: image2Buffer[i + 1],
+          b: image2Buffer[i + 2],
+        };
+        const colorKey = `${Math.floor(color.r / threshold)},${Math.floor(
+          color.g / threshold
+        )},${Math.floor(color.b / threshold)}`;
+
+        if (regionColors.has(colorKey)) {
+          colorMatches.set(colorKey, true);
+        }
+      }
+
+      // Calculate statistics
+      const matchedColors = Array.from(colorMatches.keys());
+      const regionUniqueColors = Array.from(regionColors.keys());
+
+      const result = {
+        totalRegionColors: regionUniqueColors.length,
+        matchedColorsCount: matchedColors.length,
+        matchPercentage: (
+          (matchedColors.length / regionUniqueColors.length) *
+          100
+        ).toFixed(2),
+        unmatchedColors: regionUniqueColors.filter(
+          (color) => !colorMatches.has(color)
+        ),
+        regionInfo: validRegion,
+        colorDistribution: {
+          region: Object.fromEntries(regionColors),
+          matches: matchedColors,
+        },
+      };
+
+      return result;
+    } catch (error) {
+      throw new Error(`Region color comparison error: ${error.message}`);
+    }
+  }
+
+  async handleRegionComparison(path1, path2) {
+    try {
+      // Validate inputs
+      if (!path1 || !path2) {
+        throw new Error("Both image paths are required!");
+      }
+
+      // Validate region object
+      if (!region.left || !region.top || !region.width || !region.height) {
+        throw new Error(
+          "Region must include left, top, width, and height coordinates!"
+        );
+      }
+
+      // Validate file existence
+      // await Promise.all([
+      //   fs.access(path1),
+      //   fs.access(path2)
+      // ]).catch(() => {
+      //   throw new Error("One or both image paths are invalid or inaccessible");
+      // });
+
+      // Compare the regions
+      const result = await this.compareRegionColors(path1, region, path2);
+
+      return result;
+    } catch (error) {
+      throw new Error(`Region comparison error: ${error.message}`);
+    }
+  }
+
+  async checkColorsInRegion(leftImagePath, rightImagePath, region) {
+    try {
+      // Extract the region from the left image
+      const leftRegionBuffer = await sharp(leftImagePath)
+        .extract(region) // Example: { left: 10, top: 10, width: 100, height: 100 }
+        .raw()
+        .toBuffer();
+
+      // Extract pixels from the right image
+      const rightImageBuffer = await sharp(rightImagePath)
+        .resize(50, 50) // Resize for better performance
+        .raw()
+        .toBuffer();
+
+      const leftRegionColors = this.extractColors(leftRegionBuffer);
+      const rightImageColors = this.extractColors(rightImageBuffer);
+
+      // Check if all colors in the left region are present in the right image
+      const result = leftRegionColors.every((color1) =>
+        rightImageColors.some((color2) => this.colorsMatch(color1, color2, 10))
+      );
+
+      return {
+        regionColors: leftRegionColors,
+        isPresent: result,
+      };
+    } catch (error) {
+      throw new Error(`Error in color presence check: ${error.message}`);
+    }
+  }
+
+  // Helper method to extract colors from an image buffer
+  extractColors(imageBuffer) {
+    const pixels = [];
+    for (let i = 0; i < imageBuffer.length; i += 3) {
+      pixels.push({
+        r: imageBuffer[i],
+        g: imageBuffer[i + 1],
+        b: imageBuffer[i + 2],
+      });
+    }
+    return pixels;
+  }
+
+  // Helper method to compare two colors with a tolerance
+  colorsMatch(color1, color2, tolerance = 0) {
+    return (
+      Math.abs(color1.r - color2.r) <= tolerance &&
+      Math.abs(color1.g - color2.g) <= tolerance &&
+      Math.abs(color1.b - color2.b) <= tolerance
+    );
   }
 
   calculateSaturation(stats) {
